@@ -6,14 +6,10 @@ require("dotenv").config(); // Ensure environment variables are loaded
 const PORT = process.env.PORT || 4000;
 const app = express();
 
-
-
-
 app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors("*"));
-
 
 // Require Routes
 const userRoutes = require("./routes/UserRoutes");

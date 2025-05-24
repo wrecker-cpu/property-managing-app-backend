@@ -11,7 +11,6 @@ app.use(cors());
 
 const userRoutes = require("../routes/UserRoutes");
 
-
 app.get("/", (req, res) => {
   res.send("API is running...");
 });
