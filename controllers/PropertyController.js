@@ -1,5 +1,8 @@
 const propertyModel = require("../models/PropertyModel");
 const cloudinary = require("cloudinary").v2;
+const NodeCache = require("node-cache");
+const cache = new NodeCache({ stdTTL: 300 }); // cache expires in 5 minutes
+
 require("dotenv").config();
 
 // Configure Cloudinary
@@ -169,7 +172,7 @@ const getAllProperties = async (req, res) => {
   try {
     const {
       page = 1,
-      limit = 9, // Changed default to 9 for card display
+      limit = 9,
       fileType,
       landType,
       tenure,
@@ -178,16 +181,25 @@ const getAllProperties = async (req, res) => {
       search,
     } = req.query;
 
+    const cacheKey = `properties:${page}:${limit}:${fileType}:${landType}:${tenure}:${village}:${district}:${search}`;
+
+    // Check if cached
+    const cachedData = cache.get(cacheKey);
+    if (cachedData) {
+      return res.status(200).json({
+        ...cachedData,
+        message: "Properties fetched from cache",
+      });
+    }
+
     // Build filter object
     const filter = {};
-
     if (fileType) filter.fileType = fileType;
     if (landType) filter.landType = landType;
     if (tenure) filter.tenure = tenure;
     if (village) filter.village = new RegExp(village, "i");
     if (district) filter.district = new RegExp(district, "i");
 
-    // Search across multiple fields
     if (search) {
       filter.$or = [
         { personWhoShared: new RegExp(search, "i") },
@@ -199,7 +211,6 @@ const getAllProperties = async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    // Get properties with pagination
     const properties = await propertyModel
       .find(filter)
       .sort({ createdAt: -1 })
@@ -207,10 +218,8 @@ const getAllProperties = async (req, res) => {
       .limit(Number.parseInt(limit))
       .lean();
 
-    // Get total count for current filter
     const total = await propertyModel.countDocuments(filter);
 
-    // Get counts by fileType for spotlight cards
     const fileTypeCounts = await propertyModel.aggregate([
       {
         $group: {
@@ -220,10 +229,8 @@ const getAllProperties = async (req, res) => {
       },
     ]);
 
-    // Get total count of all properties
     const totalAllProperties = await propertyModel.countDocuments({});
 
-    // Format counts for frontend
     const counts = {
       "Title Clear Lands": 0,
       "Dispute Lands": 0,
@@ -233,14 +240,13 @@ const getAllProperties = async (req, res) => {
       "All Properties": totalAllProperties,
     };
 
-    // Populate counts from aggregation result
     fileTypeCounts.forEach((item) => {
       if (counts.hasOwnProperty(item._id)) {
         counts[item._id] = item.count;
       }
     });
 
-    res.status(200).json({
+    const responseData = {
       data: properties,
       pagination: {
         currentPage: Number.parseInt(page),
@@ -250,6 +256,13 @@ const getAllProperties = async (req, res) => {
         hasPrev: page > 1,
       },
       counts: counts,
+    };
+
+    // Set to cache
+    cache.set(cacheKey, responseData);
+
+    res.status(200).json({
+      ...responseData,
       message: "Properties fetched successfully",
     });
   } catch (error) {
@@ -261,19 +274,34 @@ const getAllProperties = async (req, res) => {
   }
 };
 
+
 // Get property by ID
 const getPropertyById = async (req, res) => {
   try {
     const id = req.params.id;
+
+    const cacheKey = `property:${id}`;
+
+    // Try to get property from cache
+    const cachedProperty = cache.get(cacheKey);
+    if (cachedProperty) {
+      return res.status(200).json({
+        message: "Property fetched from cache",
+        data: cachedProperty,
+      });
+    }
+
+    // Fetch from DB if not in cache
     const property = await propertyModel.findById(id).lean();
 
     if (property) {
-      res.status(200).json({
+      cache.set(cacheKey, property); // Store in cache
+      return res.status(200).json({
         message: "Property fetched successfully",
         data: property,
       });
     } else {
-      res.status(404).json({ message: "Property not found" });
+      return res.status(404).json({ message: "Property not found" });
     }
   } catch (error) {
     console.error("Get property by ID error:", error);

@@ -9,14 +9,27 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 
-const userRoutes = require("../routes/UserRoutes");
+const userRoutes = require("./routes/UserRoutes");
+const propertyRoutes = require("../routes/PropertyRoutes");
+const buyerRoutes = require("../routes/BuyerRoutes");
+const brokerRoutes = require("../routes/BrokerRoutes");
+const walletPropertyRoutes = require("../routes/WalletPropertyRoutes");
+const notesRoutes = require("../routes/NotesRoutes");
 
 app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
 // Define API Endpoints with prefixes
+
+// Define API Endpoints with prefixes
 app.use("/api/users", userRoutes);
+app.use("/api/properties", propertyRoutes);
+app.use("/api/buyers", buyerRoutes);
+app.use("/api/brokers", brokerRoutes);
+app.use("/api/wallet-properties", walletPropertyRoutes);
+app.use("/api/notes", notesRoutes);
+
 
 // DATABASE CONNECTION
 const connectDB = async (retries = 5) => {
