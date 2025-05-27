@@ -10,4 +10,7 @@ router.put('/:id', propertyController.updateProperty);
 router.delete('/:id', propertyController.deleteProperty);
 router.delete('/:propertyId/files/:fileType/:publicId', propertyController.deletePropertyFile);
 
+// Get upload status
+router.get("/:id/upload-status", propertyController.getUploadStatus)
+
 module.exports = router;

@@ -1,9 +1,9 @@
 const propertyModel = require("../models/PropertyModel");
 const cloudinary = require("cloudinary").v2;
-const NodeCache = require("node-cache");
-const cache = new NodeCache({ stdTTL: 300 }); // cache expires in 5 minutes
-
+const { processFilesAsync } = require("../utils/fileProcessingService");
 require("dotenv").config();
+const NodeCache = require("node-cache");
+const cache = new NodeCache({ stdTTL: 300 });
 
 // Configure Cloudinary
 cloudinary.config({
@@ -12,36 +12,22 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Helper function to upload file to Cloudinary
-const uploadToCloudinary = async (
-  fileBuffer,
-  fileName,
-  resourceType = "auto"
-) => {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: resourceType,
-        public_id: `properties/${Date.now()}_${fileName}`,
-        folder: "properties",
-      },
-      (error, result) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve({
-            url: result.secure_url,
-            publicId: result.public_id,
-            originalName: fileName,
-          });
-        }
-      }
-    );
-    uploadStream.end(fileBuffer);
-  });
+// 🚀 HELPER FUNCTION: Clear all cache when data changes
+const clearAllCache = (operation = "data change") => {
+  try {
+    const cacheKeys = cache.keys();
+    const clearedCount = cacheKeys.length;
+
+    cache.flushAll();
+
+    return true;
+  } catch (error) {
+    console.error("❌ Error clearing cache:", error);
+    return false;
+  }
 };
 
-// Create property
+// Create property with async file processing
 const createProperty = async (req, res) => {
   try {
     const {
@@ -82,6 +68,7 @@ const createProperty = async (req, res) => {
       });
     }
 
+    // Create property without files first
     const property = {
       fileType,
       landType,
@@ -106,57 +93,60 @@ const createProperty = async (req, res) => {
       mapLink,
       images: [],
       pdfs: [],
+      uploadStatus: "pending",
+      totalFiles: 0,
+      uploadedFiles: 0,
     };
 
-    // Handle image uploads
+    // Count total files to upload
+    let totalFiles = 0;
     if (req.files && req.files.images) {
       const imageFiles = Array.isArray(req.files.images)
         ? req.files.images
         : [req.files.images];
-
-      for (const imageFile of imageFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(
-            imageFile.data,
-            imageFile.name,
-            "image"
-          );
-          property.images.push(uploadResult);
-        } catch (uploadError) {
-          console.error("Image upload error:", uploadError);
-        }
-      }
+      totalFiles += imageFiles.length;
     }
-
-    // Handle PDF uploads
     if (req.files && req.files.pdfs) {
       const pdfFiles = Array.isArray(req.files.pdfs)
         ? req.files.pdfs
         : [req.files.pdfs];
-
-      for (const pdfFile of pdfFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(
-            pdfFile.data,
-            pdfFile.name,
-            "raw"
-          );
-          property.pdfs.push(uploadResult);
-        } catch (uploadError) {
-          console.error("PDF upload error:", uploadError);
-        }
-      }
+      totalFiles += pdfFiles.length;
     }
 
+    property.totalFiles = totalFiles;
+
+    // Save property to database immediately
     const savedProperty = await propertyModel.create(property);
 
-    if (savedProperty) {
-      res.status(201).json({
-        message: "Property created successfully",
-        property: savedProperty,
-      });
+    // 🗑️ Clear cache after creating property
+    clearAllCache("property creation");
+
+    // Respond immediately to client
+    res.status(201).json({
+      message:
+        "Property created successfully. Files are being uploaded in the background.",
+      property: savedProperty,
+      uploadStatus: totalFiles > 0 ? "uploading" : "completed",
+    });
+
+    // Process files asynchronously if any files exist
+    if (totalFiles > 0) {
+      processFilesAsync(savedProperty._id, req.files)
+        .then(() => {
+          // 🗑️ Clear cache after file upload completion
+          clearAllCache("file upload completion");
+        })
+        .catch((error) => {
+          // 🗑️ Clear cache even on file upload failure
+          clearAllCache("file upload failure");
+        });
     } else {
-      res.status(400).json({ message: "Property creation failed" });
+      // Update status to completed if no files
+      await propertyModel.findByIdAndUpdate(savedProperty._id, {
+        uploadStatus: "completed",
+      });
+      // 🗑️ Clear cache after status update
+      clearAllCache("upload status update");
     }
   } catch (error) {
     console.error("Create property error:", error);
@@ -167,7 +157,7 @@ const createProperty = async (req, res) => {
   }
 };
 
-// Get all properties
+// Get all properties with counts
 const getAllProperties = async (req, res) => {
   try {
     const {
@@ -179,27 +169,45 @@ const getAllProperties = async (req, res) => {
       village,
       district,
       search,
+      bypassCache,
     } = req.query;
 
-    const cacheKey = `properties:${page}:${limit}:${fileType}:${landType}:${tenure}:${village}:${district}:${search}`;
+    // Check for recent uploads and clear cache if needed
+    const recentUploads = await propertyModel.countDocuments({
+      uploadStatus: { $in: ["uploading", "pending"] },
+      updatedAt: { $gte: new Date(Date.now() - 2 * 60 * 1000) },
+    });
 
-    // Check if cached
-    const cachedData = cache.get(cacheKey);
-    if (cachedData) {
+    if (recentUploads > 0 || bypassCache === "true") {
+      clearAllCache("recent uploads detected or cache bypass requested");
+    }
+
+    // Create cache key based on query parameters
+    const cacheKey = `properties_${page}_${limit}_${fileType || "all"}_${
+      landType || "all"
+    }_${tenure || "all"}_${village || "all"}_${district || "all"}_${
+      search || "no-search"
+    }`;
+
+    // Check cache first
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult && !bypassCache) {
       return res.status(200).json({
-        ...cachedData,
+        ...cachedResult,
         message: "Properties fetched from cache",
       });
     }
 
     // Build filter object
     const filter = {};
+
     if (fileType) filter.fileType = fileType;
     if (landType) filter.landType = landType;
     if (tenure) filter.tenure = tenure;
     if (village) filter.village = new RegExp(village, "i");
     if (district) filter.district = new RegExp(district, "i");
 
+    // Search across multiple fields
     if (search) {
       filter.$or = [
         { personWhoShared: new RegExp(search, "i") },
@@ -211,6 +219,7 @@ const getAllProperties = async (req, res) => {
 
     const skip = (page - 1) * limit;
 
+    // Get properties with pagination
     const properties = await propertyModel
       .find(filter)
       .sort({ createdAt: -1 })
@@ -218,8 +227,20 @@ const getAllProperties = async (req, res) => {
       .limit(Number.parseInt(limit))
       .lean();
 
+    // Format properties to ensure arrays exist
+    const formattedProperties = properties.map((property) => ({
+      ...property,
+      images: property.images || [],
+      pdfs: property.pdfs || [],
+      uploadStatus: property.uploadStatus || "completed",
+      totalFiles: property.totalFiles || 0,
+      uploadedFiles: property.uploadedFiles || 0,
+    }));
+
+    // Get total count for current filter
     const total = await propertyModel.countDocuments(filter);
 
+    // Get counts by fileType for spotlight cards
     const fileTypeCounts = await propertyModel.aggregate([
       {
         $group: {
@@ -229,8 +250,10 @@ const getAllProperties = async (req, res) => {
       },
     ]);
 
+    // Get total count of all properties
     const totalAllProperties = await propertyModel.countDocuments({});
 
+    // Format counts for frontend
     const counts = {
       "Title Clear Lands": 0,
       "Dispute Lands": 0,
@@ -240,14 +263,15 @@ const getAllProperties = async (req, res) => {
       "All Properties": totalAllProperties,
     };
 
+    // Populate counts from aggregation result
     fileTypeCounts.forEach((item) => {
       if (counts.hasOwnProperty(item._id)) {
         counts[item._id] = item.count;
       }
     });
 
-    const responseData = {
-      data: properties,
+    const result = {
+      data: formattedProperties,
       pagination: {
         currentPage: Number.parseInt(page),
         totalPages: Math.ceil(total / limit),
@@ -258,12 +282,14 @@ const getAllProperties = async (req, res) => {
       counts: counts,
     };
 
-    // Set to cache
-    cache.set(cacheKey, responseData);
+    // Cache the result
+    cache.set(cacheKey, result, 300); // 5 minutes TTL
 
     res.status(200).json({
-      ...responseData,
-      message: "Properties fetched successfully",
+      ...result,
+      message: bypassCache
+        ? "Properties fetched from database"
+        : "Properties fetched successfully",
     });
   } catch (error) {
     console.error("Get properties error:", error);
@@ -274,34 +300,47 @@ const getAllProperties = async (req, res) => {
   }
 };
 
-
-// Get property by ID
+// Get property by ID with caching
 const getPropertyById = async (req, res) => {
   try {
     const id = req.params.id;
+    const { bypassCache } = req.query;
 
-    const cacheKey = `property:${id}`;
-
-    // Try to get property from cache
+    // Check cache first (unless bypassed)
+    const cacheKey = `property_${id}`;
     const cachedProperty = cache.get(cacheKey);
-    if (cachedProperty) {
+
+    if (cachedProperty && bypassCache !== "true") {
       return res.status(200).json({
         message: "Property fetched from cache",
         data: cachedProperty,
       });
     }
 
-    // Fetch from DB if not in cache
     const property = await propertyModel.findById(id).lean();
 
     if (property) {
-      cache.set(cacheKey, property); // Store in cache
-      return res.status(200).json({
-        message: "Property fetched successfully",
+      // Ensure arrays exist
+      if (!property.images) property.images = [];
+      if (!property.pdfs) property.pdfs = [];
+      if (!property.uploadStatus) property.uploadStatus = "completed";
+      if (!property.totalFiles) property.totalFiles = 0;
+      if (!property.uploadedFiles) property.uploadedFiles = 0;
+
+      // Cache the property (unless bypassed)
+      if (bypassCache !== "true") {
+        cache.set(cacheKey, property, 300); // 5 minutes TTL
+      }
+
+      res.status(200).json({
+        message:
+          bypassCache === "true"
+            ? "Property fetched from database (cache bypassed)"
+            : "Property fetched successfully",
         data: property,
       });
     } else {
-      return res.status(404).json({ message: "Property not found" });
+      res.status(404).json({ message: "Property not found" });
     }
   } catch (error) {
     console.error("Get property by ID error:", error);
@@ -312,10 +351,13 @@ const getPropertyById = async (req, res) => {
   }
 };
 
-// Update property
+// Update property with async file processing
 const updateProperty = async (req, res) => {
   const id = req.params.id;
   try {
+    // 🗑️ Clear cache before update
+    clearAllCache("property update start");
+
     // Get existing property to handle file updates
     const existingProperty = await propertyModel.findById(id);
     if (!existingProperty) {
@@ -328,60 +370,62 @@ const updateProperty = async (req, res) => {
     if (updateData.srRate) updateData.srRate = Number(updateData.srRate);
     if (updateData.fpRate) updateData.fpRate = Number(updateData.fpRate);
 
-    // Handle new image uploads
+    // Count new files to upload
+    let newFilesCount = 0;
     if (req.files && req.files.images) {
       const imageFiles = Array.isArray(req.files.images)
         ? req.files.images
         : [req.files.images];
-      const newImages = [];
-
-      for (const imageFile of imageFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(
-            imageFile.data,
-            imageFile.name,
-            "image"
-          );
-          newImages.push(uploadResult);
-        } catch (uploadError) {
-          console.error("Image upload error:", uploadError);
-        }
-      }
-
-      updateData.images = [...existingProperty.images, ...newImages];
+      newFilesCount += imageFiles.length;
     }
-
-    // Handle new PDF uploads
     if (req.files && req.files.pdfs) {
       const pdfFiles = Array.isArray(req.files.pdfs)
         ? req.files.pdfs
         : [req.files.pdfs];
-      const newPdfs = [];
-
-      for (const pdfFile of pdfFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(
-            pdfFile.data,
-            pdfFile.name,
-            "raw"
-          );
-          newPdfs.push(uploadResult);
-        } catch (uploadError) {
-          console.error("PDF upload error:", uploadError);
-        }
-      }
-
-      updateData.pdfs = [...existingProperty.pdfs, ...newPdfs];
+      newFilesCount += pdfFiles.length;
     }
 
+    // Update property immediately without new files
     const updatedProperty = await propertyModel
       .findByIdAndUpdate(id, updateData, { new: true })
       .lean();
 
+    // 🗑️ Clear cache after property update
+    clearAllCache("property data update");
+
+    // Respond immediately to client
     res.status(200).json({
       data: updatedProperty,
-      message: "Property updated successfully",
+      message:
+        newFilesCount > 0
+          ? "Property updated successfully. New files are being uploaded in the background."
+          : "Property updated successfully",
+      uploadStatus: newFilesCount > 0 ? "uploading" : "completed",
     });
+
+    // Process new files asynchronously if any exist
+    if (newFilesCount > 0) {
+      // Update upload status
+      await propertyModel.findByIdAndUpdate(id, {
+        uploadStatus: "uploading",
+        totalFiles: (existingProperty.totalFiles || 0) + newFilesCount,
+        uploadedFiles: existingProperty.uploadedFiles || 0,
+      });
+
+      // 🗑️ Clear cache after status update
+      clearAllCache("upload status update");
+
+      processFilesAsync(id, req.files, true) // true indicates this is an update
+        .then(() => {
+          // 🗑️ Clear cache after file upload completion
+          clearAllCache("file upload completion");
+        })
+        .catch((error) => {
+          console.error(`File upload failed for property ${id}:`, error);
+          // 🗑️ Clear cache even on file upload failure
+          clearAllCache("file upload failure");
+        });
+    }
   } catch (error) {
     console.error("Update property error:", error);
     res.status(500).json({
@@ -395,6 +439,9 @@ const updateProperty = async (req, res) => {
 const deleteProperty = async (req, res) => {
   const id = req.params.id;
   try {
+    // 🗑️ Clear cache before deletion
+    clearAllCache("property deletion start");
+
     const property = await propertyModel.findById(id);
 
     if (!property) {
@@ -405,30 +452,37 @@ const deleteProperty = async (req, res) => {
     const deletePromises = [];
 
     // Delete images
-    property.images.forEach((image) => {
-      if (image.publicId) {
-        deletePromises.push(
-          cloudinary.uploader.destroy(image.publicId, {
-            resource_type: "image",
-          })
-        );
-      }
-    });
+    if (property.images && property.images.length > 0) {
+      property.images.forEach((image) => {
+        if (image.publicId) {
+          deletePromises.push(
+            cloudinary.uploader.destroy(image.publicId, {
+              resource_type: "image",
+            })
+          );
+        }
+      });
+    }
 
     // Delete PDFs
-    property.pdfs.forEach((pdf) => {
-      if (pdf.publicId) {
-        deletePromises.push(
-          cloudinary.uploader.destroy(pdf.publicId, { resource_type: "raw" })
-        );
-      }
-    });
+    if (property.pdfs && property.pdfs.length > 0) {
+      property.pdfs.forEach((pdf) => {
+        if (pdf.publicId) {
+          deletePromises.push(
+            cloudinary.uploader.destroy(pdf.publicId, { resource_type: "raw" })
+          );
+        }
+      });
+    }
 
     // Wait for all deletions to complete
     await Promise.all(deletePromises);
 
     // Delete property from database
     const deletedProperty = await propertyModel.findByIdAndDelete(id).lean();
+
+    // 🗑️ Clear cache after deletion
+    clearAllCache("property deletion completion");
 
     res.status(200).json({
       data: deletedProperty,
@@ -447,6 +501,9 @@ const deleteProperty = async (req, res) => {
 const deletePropertyFile = async (req, res) => {
   try {
     const { propertyId, fileType, publicId } = req.params;
+
+    // 🗑️ Clear cache before file deletion
+    clearAllCache("file deletion start");
 
     // Decode the publicId in case it's URL encoded
     const decodedPublicId = decodeURIComponent(publicId);
@@ -481,6 +538,9 @@ const deletePropertyFile = async (req, res) => {
       .findByIdAndUpdate(propertyId, updateField, { new: true })
       .lean();
 
+    // 🗑️ Clear cache after file deletion
+    clearAllCache("file deletion completion");
+
     res.status(200).json({
       data: updatedProperty,
       message: `${fileType} deleted successfully`,
@@ -494,6 +554,46 @@ const deletePropertyFile = async (req, res) => {
   }
 };
 
+// Get upload status for a property (never cached for real-time data)
+const getUploadStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Always fetch fresh data for upload status
+    const property = await propertyModel
+      .findById(id, "uploadStatus totalFiles uploadedFiles images pdfs")
+      .lean();
+
+    if (!property) {
+      return res.status(404).json({ message: "Property not found" });
+    }
+
+    // Calculate actual file counts
+    const actualImages = property.images ? property.images.length : 0;
+    const actualPdfs = property.pdfs ? property.pdfs.length : 0;
+    const actualTotalFiles = actualImages + actualPdfs;
+
+    res.status(200).json({
+      uploadStatus: property.uploadStatus || "completed",
+      totalFiles: property.totalFiles || 0,
+      uploadedFiles: property.uploadedFiles || 0,
+      actualFiles: actualTotalFiles,
+      actualImages: actualImages,
+      actualPdfs: actualPdfs,
+      progress:
+        property.totalFiles > 0
+          ? Math.round((property.uploadedFiles / property.totalFiles) * 100)
+          : 100,
+    });
+  } catch (error) {
+    console.error("Get upload status error:", error);
+    res.status(500).json({
+      message: "Error fetching upload status",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   createProperty,
   getAllProperties,
@@ -501,4 +601,6 @@ module.exports = {
   updateProperty,
   deleteProperty,
   deletePropertyFile,
+  getUploadStatus,
+  clearAllCache, // Export the helper function for use in other modules
 };

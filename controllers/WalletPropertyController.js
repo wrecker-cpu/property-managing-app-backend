@@ -1,7 +1,8 @@
 const walletPropertyModel = require("../models/WalletPropertyModel")
+const { processFilesAsync } = require("../utils/fileProcessingService")
 const cloudinary = require("cloudinary").v2
 const NodeCache = require("node-cache")
-const cache = new NodeCache({ stdTTL: 300 }) // cache expires in 5 minutes
+const cache = new NodeCache({ stdTTL: 300 })
 
 require("dotenv").config()
 
@@ -12,34 +13,16 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 })
 
-// Helper function to upload file to Cloudinary
-const uploadToCloudinary = async (fileBuffer, fileName, resourceType = "auto") => {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: resourceType,
-        public_id: `Wallet-Properties/${Date.now()}_${fileName}`,
-        folder: "WalletProperties",
-      },
-      (error, result) => {
-        if (error) {
-          reject(error)
-        } else {
-          resolve({
-            url: result.secure_url,
-            publicId: result.public_id,
-            originalName: fileName,
-          })
-        }
-      },
-    )
-    uploadStream.end(fileBuffer)
-  })
-}
-
-// Create walletProperty
+// ENHANCED: Create wallet property with detailed logging
 const createwalletProperty = async (req, res) => {
   try {
+    console.log("🚀 Creating wallet property...")
+    console.log("📝 Request body:", req.body)
+    console.log("📁 Request files:", {
+      images: req.files?.images ? (Array.isArray(req.files.images) ? req.files.images.length : 1) : 0,
+      pdfs: req.files?.pdfs ? (Array.isArray(req.files.pdfs) ? req.files.pdfs.length : 1) : 0,
+    })
+
     const {
       propertyCategory,
       fileType,
@@ -73,6 +56,7 @@ const createwalletProperty = async (req, res) => {
       })
     }
 
+    // Create wallet property without files first
     const walletProperty = {
       propertyCategory,
       fileType,
@@ -98,51 +82,70 @@ const createwalletProperty = async (req, res) => {
       mapLink,
       images: [],
       pdfs: [],
+      uploadStatus: "pending",
+      totalFiles: 0,
+      uploadedFiles: 0,
     }
 
-    // Handle image uploads
+    // Count total files to upload
+    let totalFiles = 0
     if (req.files && req.files.images) {
       const imageFiles = Array.isArray(req.files.images) ? req.files.images : [req.files.images]
-
-      for (const imageFile of imageFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(imageFile.data, imageFile.name, "image")
-          walletProperty.images.push(uploadResult)
-        } catch (uploadError) {
-          console.error("Image upload error:", uploadError)
-        }
-      }
+      totalFiles += imageFiles.length
+      console.log(`📸 Found ${imageFiles.length} images to upload`)
     }
-
-    // Handle PDF uploads
     if (req.files && req.files.pdfs) {
       const pdfFiles = Array.isArray(req.files.pdfs) ? req.files.pdfs : [req.files.pdfs]
-
-      for (const pdfFile of pdfFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(pdfFile.data, pdfFile.name, "raw")
-          walletProperty.pdfs.push(uploadResult)
-        } catch (uploadError) {
-          console.error("PDF upload error:", uploadError)
-        }
-      }
+      totalFiles += pdfFiles.length
+      console.log(`📄 Found ${pdfFiles.length} PDFs to upload`)
     }
 
+    walletProperty.totalFiles = totalFiles
+    console.log(`📊 Total files to upload: ${totalFiles}`)
+
+    // Save wallet property to database immediately
     const savedwalletProperty = await walletPropertyModel.create(walletProperty)
+    console.log(`💾 Wallet property saved with ID: ${savedwalletProperty._id}`)
 
     // Clear cache when new property is created
     cache.flushAll()
 
-    if (savedwalletProperty) {
-      res.status(201).json({
-        message: "Wallet property created successfully",
-        data: savedwalletProperty,
+    // Respond immediately to client
+    res.status(201).json({
+      message: "Wallet property created successfully. Files are being uploaded in the background.",
+      walletProperty: savedwalletProperty,
+      uploadStatus: totalFiles > 0 ? "uploading" : "completed",
+    })
+
+    // Process files asynchronously if any files exist
+    if (totalFiles > 0) {
+      console.log(`🔄 Starting async file processing...`)
+
+      // Update status to uploading
+      await walletPropertyModel.findByIdAndUpdate(savedwalletProperty._id, {
+        uploadStatus: "uploading",
       })
+
+      // Process files with enhanced error handling
+      processFilesAsync(savedwalletProperty._id, req.files, false, "wallet")
+        .then((result) => {
+          console.log(`✅ File upload completed for wallet property ${savedwalletProperty._id}`)
+          console.log(`📊 Upload result:`, result)
+          cache.flushAll()
+        })
+        .catch((error) => {
+          console.error(`❌ File upload failed for wallet property ${savedwalletProperty._id}:`, error)
+          cache.flushAll()
+        })
     } else {
-      res.status(400).json({ message: "Wallet property creation failed" })
+      // Update status to completed if no files
+      await walletPropertyModel.findByIdAndUpdate(savedwalletProperty._id, {
+        uploadStatus: "completed",
+      })
+      console.log(`✅ No files to upload, status set to completed`)
     }
   } catch (error) {
-    console.error("Create wallet property error:", error)
+    console.error("💥 Create wallet property error:", error)
     res.status(500).json({
       message: "Error creating wallet property",
       error: error.message,
@@ -150,24 +153,180 @@ const createwalletProperty = async (req, res) => {
   }
 }
 
-// Get all wallet properties with pagination, search, filtering, and caching
+// ENHANCED: Update wallet property with detailed logging
+const updatewalletProperty = async (req, res) => {
+  const id = req.params.id
+  try {
+    console.log(`🔄 Updating wallet property ID: ${id}`)
+    console.log("📁 Request files:", {
+      images: req.files?.images ? (Array.isArray(req.files.images) ? req.files.images.length : 1) : 0,
+      pdfs: req.files?.pdfs ? (Array.isArray(req.files.pdfs) ? req.files.pdfs.length : 1) : 0,
+    })
+
+    // Get existing wallet property to handle file updates
+    const existingwalletProperty = await walletPropertyModel.findById(id)
+    if (!existingwalletProperty) {
+      return res.status(404).json({ message: "Wallet property not found" })
+    }
+
+    console.log(
+      `📊 Existing property has ${existingwalletProperty.images?.length || 0} images and ${existingwalletProperty.pdfs?.length || 0} PDFs`,
+    )
+
+    const updateData = { ...req.body }
+
+    // Convert numeric fields
+    if (updateData.srRate) updateData.srRate = Number(updateData.srRate)
+    if (updateData.fpRate) updateData.fpRate = Number(updateData.fpRate)
+
+    // Count new files to upload
+    let newFilesCount = 0
+    if (req.files && req.files.images) {
+      const imageFiles = Array.isArray(req.files.images) ? req.files.images : [req.files.images]
+      newFilesCount += imageFiles.length
+      console.log(`📸 Adding ${imageFiles.length} new images`)
+    }
+    if (req.files && req.files.pdfs) {
+      const pdfFiles = Array.isArray(req.files.pdfs) ? req.files.pdfs : [req.files.pdfs]
+      newFilesCount += pdfFiles.length
+      console.log(`📄 Adding ${pdfFiles.length} new PDFs`)
+    }
+
+    console.log(`📊 Total new files to upload: ${newFilesCount}`)
+
+    // Update wallet property immediately without new files
+    const updatedwalletProperty = await walletPropertyModel.findByIdAndUpdate(id, updateData, { new: true }).lean()
+
+    // Clear cache when property is updated
+    cache.flushAll()
+
+    // Respond immediately to client
+    res.status(200).json({
+      data: updatedwalletProperty,
+      message:
+        newFilesCount > 0
+          ? "Wallet property updated successfully. New files are being uploaded in the background."
+          : "Wallet property updated successfully",
+      uploadStatus: newFilesCount > 0 ? "uploading" : "completed",
+    })
+
+    // Process new files asynchronously if any exist
+    if (newFilesCount > 0) {
+      console.log(`🔄 Starting async file processing for update...`)
+
+      // Update upload status
+      await walletPropertyModel.findByIdAndUpdate(id, {
+        uploadStatus: "uploading",
+        totalFiles: (existingwalletProperty.totalFiles || 0) + newFilesCount,
+        uploadedFiles: existingwalletProperty.uploadedFiles || 0,
+      })
+
+      // Process files with enhanced error handling
+      processFilesAsync(id, req.files, true, "wallet")
+        .then((result) => {
+          console.log(`✅ File upload completed for wallet property update ${id}`)
+          console.log(`📊 Upload result:`, result)
+          cache.flushAll()
+        })
+        .catch((error) => {
+          console.error(`❌ File upload failed for wallet property update ${id}:`, error)
+          cache.flushAll()
+        })
+    }
+  } catch (error) {
+    console.error("💥 Update wallet property error:", error)
+    res.status(500).json({
+      message: "Error updating wallet property",
+      error: error.message,
+    })
+  }
+}
+
+// Get wallet property by ID with enhanced logging
+const getwalletPropertyById = async (req, res) => {
+  try {
+    const id = req.params.id
+    console.log(`🔍 Fetching wallet property ID: ${id}`)
+
+    const cacheKey = `walletProperty_${id}`
+    const cachedProperty = cache.get(cacheKey)
+    if (cachedProperty) {
+      console.log(`💨 Returning cached property`)
+      return res.status(200).json({
+        message: "Wallet property fetched from cache",
+        data: cachedProperty,
+      })
+    }
+
+    const walletProperty = await walletPropertyModel.findById(id).lean()
+
+    if (walletProperty) {
+      console.log(
+        `📊 Property found with ${walletProperty.images?.length || 0} images and ${walletProperty.pdfs?.length || 0} PDFs`,
+      )
+
+      // Ensure arrays exist
+      if (!walletProperty.images) walletProperty.images = []
+      if (!walletProperty.pdfs) walletProperty.pdfs = []
+      if (!walletProperty.uploadStatus) walletProperty.uploadStatus = "completed"
+      if (!walletProperty.totalFiles) walletProperty.totalFiles = 0
+      if (!walletProperty.uploadedFiles) walletProperty.uploadedFiles = 0
+
+      cache.set(cacheKey, walletProperty, 300)
+
+      res.status(200).json({
+        message: "Wallet property fetched successfully",
+        data: walletProperty,
+      })
+    } else {
+      console.log(`❌ Property not found`)
+      res.status(404).json({ message: "Wallet property not found" })
+    }
+  } catch (error) {
+    console.error("💥 Get wallet property by ID error:", error)
+    res.status(500).json({
+      message: "Server Error",
+      error: error.message,
+    })
+  }
+}
+
+// Get all wallet properties (keeping existing implementation)
 const getAllWalletProperties = async (req, res) => {
   try {
-    const { page = 1, limit = 9, propertyCategory, fileType, landType, tenure, village, district, search } = req.query
+    const {
+      page = 1,
+      limit = 9,
+      propertyCategory,
+      fileType,
+      landType,
+      tenure,
+      village,
+      district,
+      search,
+      bypassCache,
+    } = req.query
 
-    // Create cache key based on query parameters
+    const recentUploads = await walletPropertyModel.countDocuments({
+      uploadStatus: { $in: ["uploading", "pending"] },
+      updatedAt: { $gte: new Date(Date.now() - 2 * 60 * 1000) },
+    })
+
+    if (recentUploads > 0 || bypassCache === "true") {
+      cache.flushAll()
+      console.log("🗑️ Cache cleared due to recent uploads")
+    }
+
     const cacheKey = `walletproperties_${page}_${limit}_${propertyCategory || "all"}_${fileType || "all"}_${landType || "all"}_${tenure || "all"}_${village || "all"}_${district || "all"}_${search || "no-search"}`
 
-    // Check cache first
     const cachedResult = cache.get(cacheKey)
-    if (cachedResult) {
+    if (cachedResult && !bypassCache) {
       return res.status(200).json({
         ...cachedResult,
         message: "Wallet properties fetched from cache",
       })
     }
 
-    // Build filter object
     const filter = {}
     if (propertyCategory) filter.propertyCategory = propertyCategory
     if (fileType) filter.fileType = fileType
@@ -176,7 +335,6 @@ const getAllWalletProperties = async (req, res) => {
     if (village) filter.village = new RegExp(village, "i")
     if (district) filter.district = new RegExp(district, "i")
 
-    // Search across multiple fields
     if (search) {
       filter.$or = [
         { personWhoShared: new RegExp(search, "i") },
@@ -188,7 +346,6 @@ const getAllWalletProperties = async (req, res) => {
 
     const skip = (page - 1) * limit
 
-    // Get properties with pagination
     const properties = await walletPropertyModel
       .find(filter)
       .sort({ createdAt: -1 })
@@ -196,10 +353,17 @@ const getAllWalletProperties = async (req, res) => {
       .limit(Number.parseInt(limit))
       .lean()
 
-    // Get total count for current filter
+    const formattedProperties = properties.map((property) => ({
+      ...property,
+      images: property.images || [],
+      pdfs: property.pdfs || [],
+      uploadStatus: property.uploadStatus || "completed",
+      totalFiles: property.totalFiles || 0,
+      uploadedFiles: property.uploadedFiles || 0,
+    }))
+
     const total = await walletPropertyModel.countDocuments(filter)
 
-    // Get counts by fileType for spotlight cards
     const fileTypeCounts = await walletPropertyModel.aggregate([
       ...(propertyCategory ? [{ $match: { propertyCategory } }] : []),
       {
@@ -210,11 +374,9 @@ const getAllWalletProperties = async (req, res) => {
       },
     ])
 
-    // Get total count for the specific category or all
     const categoryFilter = propertyCategory ? { propertyCategory } : {}
     const totalCategoryProperties = await walletPropertyModel.countDocuments(categoryFilter)
 
-    // Format counts for frontend
     const counts = {
       "Title Clear Lands": 0,
       "Dispute Lands": 0,
@@ -224,7 +386,6 @@ const getAllWalletProperties = async (req, res) => {
       "All Properties": totalCategoryProperties,
     }
 
-    // Populate counts from aggregation result
     fileTypeCounts.forEach((item) => {
       if (counts.hasOwnProperty(item._id)) {
         counts[item._id] = item.count
@@ -232,7 +393,7 @@ const getAllWalletProperties = async (req, res) => {
     })
 
     const result = {
-      data: properties,
+      data: formattedProperties,
       pagination: {
         currentPage: Number.parseInt(page),
         totalPages: Math.ceil(total / limit),
@@ -243,12 +404,11 @@ const getAllWalletProperties = async (req, res) => {
       counts: counts,
     }
 
-    // Cache the result for 5 minutes
     cache.set(cacheKey, result, 300)
 
     res.status(200).json({
       ...result,
-      message: "Wallet properties fetched successfully",
+      message: bypassCache ? "Wallet properties fetched from database" : "Wallet properties fetched successfully",
     })
   } catch (error) {
     console.error("Get wallet properties error:", error)
@@ -259,114 +419,7 @@ const getAllWalletProperties = async (req, res) => {
   }
 }
 
-// Get walletProperty by ID with caching
-const getwalletPropertyById = async (req, res) => {
-  try {
-    const id = req.params.id
-
-    // Create cache key for individual property
-    const cacheKey = `walletProperty_${id}`
-
-    // Check cache first
-    const cachedProperty = cache.get(cacheKey)
-    if (cachedProperty) {
-      return res.status(200).json({
-        message: "Wallet property fetched from cache",
-        data: cachedProperty,
-      })
-    }
-
-    const walletProperty = await walletPropertyModel.findById(id).lean()
-
-    if (walletProperty) {
-      // Cache the result for 5 minutes
-      cache.set(cacheKey, walletProperty, 300)
-
-      res.status(200).json({
-        message: "Wallet property fetched successfully",
-        data: walletProperty,
-      })
-    } else {
-      res.status(404).json({ message: "Wallet property not found" })
-    }
-  } catch (error) {
-    console.error("Get wallet property by ID error:", error)
-    res.status(500).json({
-      message: "Server Error",
-      error: error.message,
-    })
-  }
-}
-
-// Update walletProperty
-const updatewalletProperty = async (req, res) => {
-  const id = req.params.id
-  try {
-    // Get existing walletProperty to handle file updates
-    const existingwalletProperty = await walletPropertyModel.findById(id)
-    if (!existingwalletProperty) {
-      return res.status(404).json({ message: "Wallet property not found" })
-    }
-
-    const updateData = { ...req.body }
-
-    // Convert numeric fields
-    if (updateData.srRate) updateData.srRate = Number(updateData.srRate)
-    if (updateData.fpRate) updateData.fpRate = Number(updateData.fpRate)
-
-    // Handle new image uploads
-    if (req.files && req.files.images) {
-      const imageFiles = Array.isArray(req.files.images) ? req.files.images : [req.files.images]
-      const newImages = []
-
-      for (const imageFile of imageFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(imageFile.data, imageFile.name, "image")
-          newImages.push(uploadResult)
-        } catch (uploadError) {
-          console.error("Image upload error:", uploadError)
-        }
-      }
-
-      updateData.images = [...existingwalletProperty.images, ...newImages]
-    }
-
-    // Handle new PDF uploads
-    if (req.files && req.files.pdfs) {
-      const pdfFiles = Array.isArray(req.files.pdfs) ? req.files.pdfs : [req.files.pdfs]
-      const newPdfs = []
-
-      for (const pdfFile of pdfFiles) {
-        try {
-          const uploadResult = await uploadToCloudinary(pdfFile.data, pdfFile.name, "raw")
-          newPdfs.push(uploadResult)
-        } catch (uploadError) {
-          console.error("PDF upload error:", uploadError)
-        }
-      }
-
-      updateData.pdfs = [...existingwalletProperty.pdfs, ...newPdfs]
-    }
-
-    const updatedwalletProperty = await walletPropertyModel.findByIdAndUpdate(id, updateData, { new: true }).lean()
-
-    // Clear cache when property is updated
-    cache.flushAll()
-
-    res.status(200).json({
-      data: updatedwalletProperty,
-      message: "Wallet property updated successfully",
-    })
-  } catch (error) {
-    console.error("Update wallet property error:", error)
-    res.status(500).json({
-      message: "Error updating wallet property",
-      error: error.message,
-    })
-  }
-}
-
-// Delete walletProperty
+// Delete wallet property (keeping existing implementation)
 const deletewalletProperty = async (req, res) => {
   const id = req.params.id
   try {
@@ -376,30 +429,26 @@ const deletewalletProperty = async (req, res) => {
       return res.status(404).json({ message: "Wallet property not found" })
     }
 
-    // Delete files from Cloudinary
     const deletePromises = []
 
-    // Delete images
-    walletProperty.images.forEach((image) => {
-      if (image.publicId) {
-        deletePromises.push(cloudinary.uploader.destroy(image.publicId, { resource_type: "image" }))
-      }
-    })
+    if (walletProperty.images && walletProperty.images.length > 0) {
+      walletProperty.images.forEach((image) => {
+        if (image.publicId) {
+          deletePromises.push(cloudinary.uploader.destroy(image.publicId, { resource_type: "image" }))
+        }
+      })
+    }
 
-    // Delete PDFs
-    walletProperty.pdfs.forEach((pdf) => {
-      if (pdf.publicId) {
-        deletePromises.push(cloudinary.uploader.destroy(pdf.publicId, { resource_type: "raw" }))
-      }
-    })
+    if (walletProperty.pdfs && walletProperty.pdfs.length > 0) {
+      walletProperty.pdfs.forEach((pdf) => {
+        if (pdf.publicId) {
+          deletePromises.push(cloudinary.uploader.destroy(pdf.publicId, { resource_type: "raw" }))
+        }
+      })
+    }
 
-    // Wait for all deletions to complete
     await Promise.all(deletePromises)
-
-    // Delete walletProperty from database
     const deletedwalletProperty = await walletPropertyModel.findByIdAndDelete(id).lean()
-
-    // Clear cache when property is deleted
     cache.flushAll()
 
     res.status(200).json({
@@ -415,12 +464,10 @@ const deletewalletProperty = async (req, res) => {
   }
 }
 
-// Delete specific file from walletProperty
+// Delete specific file from wallet property (keeping existing implementation)
 const deletewalletPropertyFile = async (req, res) => {
   try {
     const { walletPropertyId, fileType, publicId } = req.params
-
-    // Decode the publicId in case it's URL encoded
     const decodedPublicId = decodeURIComponent(publicId)
 
     const walletProperty = await walletPropertyModel.findById(walletPropertyId)
@@ -435,22 +482,16 @@ const deletewalletPropertyFile = async (req, res) => {
       return res.status(404).json({ message: "File not found" })
     }
 
-    // Delete from Cloudinary
     const resourceType = fileType === "image" ? "image" : "raw"
     await cloudinary.uploader.destroy(decodedPublicId, { resource_type: resourceType })
 
-    // Remove from array
     fileArray.splice(fileIndex, 1)
 
-    // Update walletProperty
     const updateField = fileType === "image" ? { images: fileArray } : { pdfs: fileArray }
     const updatedwalletProperty = await walletPropertyModel
-      .findByIdAndUpdate(walletPropertyId, updateField, {
-        new: true,
-      })
+      .findByIdAndUpdate(walletPropertyId, updateField, { new: true })
       .lean()
 
-    // Clear cache when file is deleted
     cache.flushAll()
 
     res.status(200).json({
@@ -466,6 +507,34 @@ const deletewalletPropertyFile = async (req, res) => {
   }
 }
 
+// Get upload status for wallet property
+const getUploadStatus = async (req, res) => {
+  try {
+    const { id } = req.params
+    const walletProperty = await walletPropertyModel.findById(id, "uploadStatus totalFiles uploadedFiles").lean()
+
+    if (!walletProperty) {
+      return res.status(404).json({ message: "Wallet property not found" })
+    }
+
+    res.status(200).json({
+      uploadStatus: walletProperty.uploadStatus || "completed",
+      totalFiles: walletProperty.totalFiles || 0,
+      uploadedFiles: walletProperty.uploadedFiles || 0,
+      progress:
+        walletProperty.totalFiles > 0
+          ? Math.round((walletProperty.uploadedFiles / walletProperty.totalFiles) * 100)
+          : 100,
+    })
+  } catch (error) {
+    console.error("Get upload status error:", error)
+    res.status(500).json({
+      message: "Error fetching upload status",
+      error: error.message,
+    })
+  }
+}
+
 module.exports = {
   createwalletProperty,
   getAllWalletProperties,
@@ -473,4 +542,5 @@ module.exports = {
   updatewalletProperty,
   deletewalletProperty,
   deletewalletPropertyFile,
+  getUploadStatus,
 }

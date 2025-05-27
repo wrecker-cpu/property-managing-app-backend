@@ -20,6 +20,7 @@ const buyerRoutes = require("./routes/BuyerRoutes");
 const brokerRoutes = require("./routes/BrokerRoutes");
 const walletPropertyRoutes = require("./routes/WalletPropertyRoutes");
 const notesRoutes = require("./routes/NotesRoutes");
+const mapsRoutes = require("./routes/MapsRoutes");
 
 app.get("/", (req, res) => {
   res.send("API is running...");
@@ -32,6 +33,7 @@ app.use("/api/buyers", buyerRoutes);
 app.use("/api/brokers", brokerRoutes);
 app.use("/api/wallet-properties", walletPropertyRoutes);
 app.use("/api/notes", notesRoutes);
+app.use("/api/maps", mapsRoutes);
 
 // DATABASE CONNECTION
 const connectDB = async (retries = 5) => {

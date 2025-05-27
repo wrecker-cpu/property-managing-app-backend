@@ -44,7 +44,20 @@ const propertySchema = new Schema({
     url: String,
     publicId: String,
     originalName: String
-  }]
+  }],
+   uploadStatus: {
+      type: String,
+      enum: ["pending", "uploading", "completed", "failed"],
+      default: "completed",
+    },
+    totalFiles: {
+      type: Number,
+      default: 0,
+    },
+    uploadedFiles: {
+      type: Number,
+      default: 0,
+    },
 }, { timestamps: true });
 
 

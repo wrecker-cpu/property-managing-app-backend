@@ -60,8 +60,34 @@ const walletPropertySchema = new Schema(
         originalName: String,
       },
     ],
+    // NEW: Upload status tracking fields for async file processing
+    uploadStatus: {
+      type: String,
+      enum: ["pending", "uploading", "completed", "failed"],
+      default: "completed",
+    },
+    totalFiles: {
+      type: Number,
+      default: 0,
+    },
+    uploadedFiles: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );
+
+// Add indexes for better query performance
+walletPropertySchema.index({ propertyCategory: 1 });
+walletPropertySchema.index({ fileType: 1 });
+walletPropertySchema.index({ personWhoShared: 1 });
+walletPropertySchema.index({ village: 1 });
+walletPropertySchema.index({ district: 1 });
+walletPropertySchema.index({ uploadStatus: 1 });
+walletPropertySchema.index({ createdAt: -1 });
+
+// Add a compound index for common queries
+walletPropertySchema.index({ propertyCategory: 1, fileType: 1, createdAt: -1 });
 
 module.exports = mongoose.model("walletProperty", walletPropertySchema);

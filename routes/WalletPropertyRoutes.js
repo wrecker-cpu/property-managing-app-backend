@@ -16,4 +16,8 @@ router.delete(
   walletPropertyController.deletewalletPropertyFile,
 )
 
+
+// Get upload status
+router.get("/:id/upload-status", walletPropertyController.getUploadStatus)
+
 module.exports = router;
