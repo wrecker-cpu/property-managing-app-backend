@@ -286,6 +286,42 @@ const getMapsById = async (req, res) => {
   }
 };
 
+const toggleOnBoardStatus = async (req, res) => {
+  const { id } = req.params;
+  const { onBoard } = req.body;
+
+  try {
+    if (typeof onBoard !== "boolean") {
+      return res
+        .status(400)
+        .json({ message: "'onBoard' must be a boolean value" });
+    }
+
+    const updatedProperty = await mapsModel.findByIdAndUpdate(
+      id,
+      { onBoard },
+      { new: true }
+    );
+
+    if (!updatedProperty) {
+      return res.status(404).json({ message: "Maps Property not found" });
+    }
+
+    res.status(200).json({
+      message: `Maps Property ${
+        onBoard ? "marked as onboarded" : "removed from onboard"
+      }`,
+      data: updatedProperty,
+    });
+  } catch (error) {
+    console.error("Toggle onBoard status error:", error);
+    res.status(500).json({
+      message: "Error toggling onboard status",
+      error: error.message,
+    });
+  }
+};
+
 // Delete maps
 const deleteMaps = async (req, res) => {
   const id = req.params.id;
@@ -431,6 +467,7 @@ module.exports = {
   getMapsById,
   updateMaps,
   deleteMaps,
+  toggleOnBoardStatus,
   deleteMapsFile,
   getUploadStatus,
 };

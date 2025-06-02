@@ -8,6 +8,7 @@ router.post("/", MapsController.createMaps)
 router.get("/", MapsController.getAllMaps)
 router.get("/:id", MapsController.getMapsById)
 router.put("/:id", MapsController.updateMaps)
+router.patch("/:id/onboard", MapsController.toggleOnBoardStatus);
 router.delete("/:id", MapsController.deleteMaps)
 
 // Delete specific file from maps

@@ -166,6 +166,7 @@ const getAllProperties = async (req, res) => {
       fileType,
       landType,
       tenure,
+      onBoard,
       village,
       district,
       search,
@@ -204,6 +205,7 @@ const getAllProperties = async (req, res) => {
     if (fileType) filter.fileType = fileType;
     if (landType) filter.landType = landType;
     if (tenure) filter.tenure = tenure;
+     if (onBoard) filter.onBoard = onBoard;
     if (village) filter.village = new RegExp(village, "i");
     if (district) filter.district = new RegExp(district, "i");
 
@@ -435,6 +437,42 @@ const updateProperty = async (req, res) => {
   }
 };
 
+const toggleOnBoardStatus = async (req, res) => {
+  const { id } = req.params;
+  const { onBoard } = req.body;
+
+  try {
+    if (typeof onBoard !== "boolean") {
+      return res
+        .status(400)
+        .json({ message: "'onBoard' must be a boolean value" });
+    }
+
+    const updatedProperty = await propertyModel.findByIdAndUpdate(
+      id,
+      { onBoard },
+      { new: true }
+    );
+
+    if (!updatedProperty) {
+      return res.status(404).json({ message: "Property not found" });
+    }
+
+    res.status(200).json({
+      message: `Property ${
+        onBoard ? "marked as onboarded" : "removed from onboard"
+      }`,
+      data: updatedProperty,
+    });
+  } catch (error) {
+    console.error("Toggle onBoard status error:", error);
+    res.status(500).json({
+      message: "Error toggling onboard status",
+      error: error.message,
+    });
+  }
+};
+
 // Delete property
 const deleteProperty = async (req, res) => {
   const id = req.params.id;
@@ -602,5 +640,6 @@ module.exports = {
   deleteProperty,
   deletePropertyFile,
   getUploadStatus,
+  toggleOnBoardStatus,
   clearAllCache, // Export the helper function for use in other modules
 };

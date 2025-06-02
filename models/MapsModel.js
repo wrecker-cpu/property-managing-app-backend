@@ -1,4 +1,4 @@
-const mongoose = require("mongoose")
+const mongoose = require("mongoose");
 
 const mapsSchema = new mongoose.Schema(
   {
@@ -9,6 +9,10 @@ const mapsSchema = new mongoose.Schema(
     notes: {
       type: String,
       default: "",
+    },
+    onBoard: {
+      type: Boolean,
+      default: false,
     },
     images: [
       {
@@ -41,7 +45,7 @@ const mapsSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  },
-)
+  }
+);
 
-module.exports = mongoose.model("Maps", mapsSchema)
+module.exports = mongoose.model("Maps", mapsSchema);
