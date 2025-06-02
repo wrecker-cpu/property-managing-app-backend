@@ -205,7 +205,7 @@ const getAllProperties = async (req, res) => {
     if (fileType) filter.fileType = fileType;
     if (landType) filter.landType = landType;
     if (tenure) filter.tenure = tenure;
-     if (onBoard) filter.onBoard = onBoard;
+    if (onBoard) filter.onBoard = onBoard;
     if (village) filter.village = new RegExp(village, "i");
     if (district) filter.district = new RegExp(district, "i");
 
@@ -458,6 +458,9 @@ const toggleOnBoardStatus = async (req, res) => {
       return res.status(404).json({ message: "Property not found" });
     }
 
+    // Clear cache after toggling onBoard status
+    clearAllCache("onBoard status update");
+
     res.status(200).json({
       message: `Property ${
         onBoard ? "marked as onboarded" : "removed from onboard"
@@ -605,6 +608,8 @@ const getUploadStatus = async (req, res) => {
     if (!property) {
       return res.status(404).json({ message: "Property not found" });
     }
+
+    clearAllCache("property update start");
 
     // Calculate actual file counts
     const actualImages = property.images ? property.images.length : 0;

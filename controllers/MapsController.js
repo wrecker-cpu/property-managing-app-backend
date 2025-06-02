@@ -307,6 +307,9 @@ const toggleOnBoardStatus = async (req, res) => {
       return res.status(404).json({ message: "Maps Property not found" });
     }
 
+    // Clear cache after toggling onBoard status
+    cache.flushAll();
+
     res.status(200).json({
       message: `Maps Property ${
         onBoard ? "marked as onboarded" : "removed from onboard"
