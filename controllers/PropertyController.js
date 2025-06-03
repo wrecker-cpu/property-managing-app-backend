@@ -222,7 +222,7 @@ const createProperty = async (req, res) => {
       .sort({ updatedAt: -1 });
 
     // Get total count for current filter
-    const total = await propertyModel.countDocuments(filter);
+    const totalProperties = await propertyModel.countDocuments(filter);
 
     // Get counts by fileType for spotlight cards - adjust based on recycleBin parameter
     let fileTypeFilter = {};
@@ -271,12 +271,12 @@ const createProperty = async (req, res) => {
       counts[item._id] = item.count;
     });
 
-    const totalPages = Math.ceil(total / limit);
+    const totalPages = Math.ceil(totalProperties / limit);
 
     const response = {
       data:properties,
       pagination: {
-        total,
+        totalProperties,
         totalPages,
         currentPage: parseInt(page),
         limit: parseInt(limit),
