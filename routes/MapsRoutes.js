@@ -1,20 +1,24 @@
-const express = require("express")
-const MapsController = require("../controllers/MapsController")
+const express = require("express");
+const MapsController = require("../controllers/MapsController");
 
-const router = express.Router()
+const router = express.Router();
 
 // Maps CRUD routes - using the same middleware as property routes
-router.post("/", MapsController.createMaps)
-router.get("/", MapsController.getAllMaps)
-router.get("/:id", MapsController.getMapsById)
-router.put("/:id", MapsController.updateMaps)
+router.post("/", MapsController.createMaps);
+router.get("/", MapsController.getAllMaps);
+router.get("/:id", MapsController.getMapsById);
+router.put("/:id", MapsController.updateMaps);
 router.patch("/:id/onboard", MapsController.toggleOnBoardStatus);
-router.delete("/:id", MapsController.deleteMaps)
+router.patch("/:id/recycleBin", MapsController.moveToRecycleBin);
+router.delete("/:id", MapsController.deleteMaps);
 
 // Delete specific file from maps
-router.delete("/:mapsId/files/:fileType/:publicId", MapsController.deleteMapsFile)
+router.delete(
+  "/:mapsId/files/:fileType/:publicId",
+  MapsController.deleteMapsFile
+);
 
 // Get upload status
-router.get("/:id/upload-status", MapsController.getUploadStatus)
+router.get("/:id/upload-status", MapsController.getUploadStatus);
 
-module.exports = router
+module.exports = router;

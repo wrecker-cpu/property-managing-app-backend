@@ -14,6 +14,10 @@ const mapsSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    recycleBin: {
+      type: Boolean,
+      default: false,
+    },
     images: [
       {
         url: String,

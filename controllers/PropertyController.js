@@ -158,92 +158,84 @@ const createProperty = async (req, res) => {
 };
 
 // Get all properties with counts
-const getAllProperties = async (req, res) => {
+ const getAllProperties = async (req, res) => {
   try {
-    const {
-      page = 1,
-      limit = 9,
-      fileType,
-      landType,
-      tenure,
-      onBoard,
-      village,
-      district,
-      search,
-      bypassCache,
-    } = req.query;
-
-    // Check for recent uploads and clear cache if needed
-    const recentUploads = await propertyModel.countDocuments({
-      uploadStatus: { $in: ["uploading", "pending"] },
-      updatedAt: { $gte: new Date(Date.now() - 2 * 60 * 1000) },
-    });
-
-    if (recentUploads > 0 || bypassCache === "true") {
-      clearAllCache("recent uploads detected or cache bypass requested");
-    }
+    const { page = 1, limit = 10, fileType, landType, tenure, onBoard, recycleBin, village, district, search } = req.query;
+    const skip = (page - 1) * limit;
 
     // Create cache key based on query parameters
     const cacheKey = `properties_${page}_${limit}_${fileType || "all"}_${
       landType || "all"
-    }_${tenure || "all"}_${village || "all"}_${district || "all"}_${
+    }_${tenure || "all"}_${onBoard || "all"}_${recycleBin || "all"}_${village || "all"}_${district || "all"}_${
       search || "no-search"
     }`;
 
-    // Check cache first
-    const cachedResult = cache.get(cacheKey);
-    if (cachedResult && !bypassCache) {
-      return res.status(200).json({
-        ...cachedResult,
-        message: "Properties fetched from cache",
-      });
+    // Check if data is in cache
+    if (cache.has(cacheKey)) {
+      return res.status(200).json(cache.get(cacheKey));
     }
 
-    // Build filter object
-    const filter = {};
+    let filter = {};
 
-    if (fileType) filter.fileType = fileType;
-    if (landType) filter.landType = landType;
-    if (tenure) filter.tenure = tenure;
-    if (onBoard) filter.onBoard = onBoard;
-    if (village) filter.village = new RegExp(village, "i");
-    if (district) filter.district = new RegExp(district, "i");
+    if (fileType) {
+      filter.fileType = fileType;
+    }
+    if (landType) {
+      filter.landType = landType;
+    }
+    if (tenure) {
+      filter.tenure = tenure;
+    }
+    if (onBoard) {
+      filter.onBoard = onBoard;
+    }
+    if (village) {
+      filter.village = village;
+    }
+     if (district) {
+      filter.district = district;
+    }
 
-    // Search across multiple fields
+    if (recycleBin === "true") {
+      filter.recycleBin = true;
+    } else if (recycleBin === "false") {
+      // Filter for properties where recycleBin is either false or doesn't exist
+      filter.$or = [{ recycleBin: false }, { recycleBin: { $exists: false } }];
+    }
+
     if (search) {
       filter.$or = [
-        { personWhoShared: new RegExp(search, "i") },
-        { village: new RegExp(search, "i") },
-        { district: new RegExp(search, "i") },
-        { nearByLandmark: new RegExp(search, "i") },
+        { fileType: { $regex: search, $options: "i" } },
+        { landType: { $regex: search, $options: "i" } },
+        { tenure: { $regex: search, $options: "i" } },
+        { onBoard: { $regex: search, $options: "i" } },
+        { village: { $regex: search, $options: "i" } },
+        { district: { $regex: search, $options: "i" } },
+        { propertyId: { $regex: search, $options: "i" } },
       ];
     }
 
-    const skip = (page - 1) * limit;
-
-    // Get properties with pagination
     const properties = await propertyModel
       .find(filter)
-      .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(Number.parseInt(limit))
-      .lean();
-
-    // Format properties to ensure arrays exist
-    const formattedProperties = properties.map((property) => ({
-      ...property,
-      images: property.images || [],
-      pdfs: property.pdfs || [],
-      uploadStatus: property.uploadStatus || "completed",
-      totalFiles: property.totalFiles || 0,
-      uploadedFiles: property.uploadedFiles || 0,
-    }));
+      .limit(limit)
+      .sort({ updatedAt: -1 });
 
     // Get total count for current filter
     const total = await propertyModel.countDocuments(filter);
 
-    // Get counts by fileType for spotlight cards
+    // Get counts by fileType for spotlight cards - adjust based on recycleBin parameter
+    let fileTypeFilter = {};
+    if (recycleBin === "true") {
+      fileTypeFilter.recycleBin = true;
+    } else if (recycleBin === "false") {
+      fileTypeFilter.$or = [{ recycleBin: false }, { recycleBin: { $exists: false } }];
+    }
+
     const fileTypeCounts = await propertyModel.aggregate([
+      {
+        $match: fileTypeFilter
+      },
       {
         $group: {
           _id: "$fileType",
@@ -252,8 +244,18 @@ const getAllProperties = async (req, res) => {
       },
     ]);
 
-    // Get total count of all properties
-    const totalAllProperties = await propertyModel.countDocuments({});
+    // Get total count of properties based on recycleBin parameter
+    let totalAllProperties;
+    if (recycleBin === "true") {
+      totalAllProperties = await propertyModel.countDocuments({ recycleBin: true });
+    } else if (recycleBin === "false") {
+      totalAllProperties = await propertyModel.countDocuments({
+        $or: [{ recycleBin: false }, { recycleBin: { $exists: false } }]
+      });
+    } else {
+      // If recycleBin is not specified, count all properties
+      totalAllProperties = await propertyModel.countDocuments({});
+    }
 
     // Format counts for frontend
     const counts = {
@@ -265,40 +267,30 @@ const getAllProperties = async (req, res) => {
       "All Properties": totalAllProperties,
     };
 
-    // Populate counts from aggregation result
     fileTypeCounts.forEach((item) => {
-      if (counts.hasOwnProperty(item._id)) {
-        counts[item._id] = item.count;
-      }
+      counts[item._id] = item.count;
     });
 
-    const result = {
-      data: formattedProperties,
+    const totalPages = Math.ceil(total / limit);
+
+    const response = {
+      data:properties,
       pagination: {
-        currentPage: Number.parseInt(page),
-        totalPages: Math.ceil(total / limit),
-        totalProperties: total,
-        hasNext: page * limit < total,
-        hasPrev: page > 1,
+        total,
+        totalPages,
+        currentPage: parseInt(page),
+        limit: parseInt(limit),
       },
-      counts: counts,
+      counts,
     };
 
-    // Cache the result
-    cache.set(cacheKey, result, 300); // 5 minutes TTL
+    // Store data in cache
+    cache.set(cacheKey, response);
 
-    res.status(200).json({
-      ...result,
-      message: bypassCache
-        ? "Properties fetched from database"
-        : "Properties fetched successfully",
-    });
+    res.status(200).json(response);
   } catch (error) {
-    console.error("Get properties error:", error);
-    res.status(500).json({
-      message: "Error fetching properties",
-      error: error.message,
-    });
+    console.error(error);
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -476,6 +468,45 @@ const toggleOnBoardStatus = async (req, res) => {
   }
 };
 
+const moveToRecycleBin = async (req, res) => {
+  const { id } = req.params;
+  const { recycleBin } = req.body;
+
+  try {
+    if (typeof recycleBin !== "boolean") {
+      return res
+        .status(400)
+        .json({ message: "'recycleBin' must be a boolean value" });
+    }
+
+    const updatedProperty = await propertyModel.findByIdAndUpdate(
+      id,
+      { recycleBin },
+      { new: true }
+    );
+
+    if (!updatedProperty) {
+      return res.status(404).json({ message: "Property not found" });
+    }
+
+    // Clear cache after toggling onBoard status
+    clearAllCache("recycleBin status update");
+
+    res.status(200).json({
+      message: `Property ${
+        recycleBin ? "Moved To Recycle Bin" : "removed from Recycle Bin"
+      }`,
+      data: updatedProperty,
+    });
+  } catch (error) {
+    console.error("Moving Recycle Bin status error:", error);
+    res.status(500).json({
+      message: "Error Moving Property To Recycle Bin",
+      error: error.message,
+    });
+  }
+};
+
 // Delete property
 const deleteProperty = async (req, res) => {
   const id = req.params.id;
@@ -646,5 +677,6 @@ module.exports = {
   deletePropertyFile,
   getUploadStatus,
   toggleOnBoardStatus,
+  moveToRecycleBin,
   clearAllCache, // Export the helper function for use in other modules
 };

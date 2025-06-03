@@ -169,9 +169,19 @@ const updateMaps = async (req, res) => {
 };
 
 // Get all maps with pagination, search, and caching
+// Get all maps with pagination, search, and caching
 const getAllMaps = async (req, res) => {
   try {
-    const { page = 1, limit = 9, search, bypassCache } = req.query;
+    const {
+      page = 1,
+      limit = 9,
+      search,
+      recycleBin,
+      onBoard,
+      bypassCache,
+    } = req.query;
+
+
 
     // Check for recent uploads (last 2 minutes)
     const recentUploads = await mapsModel.countDocuments({
@@ -186,7 +196,7 @@ const getAllMaps = async (req, res) => {
     }
 
     // Create cache key
-    const cacheKey = `maps_${page}_${limit}_${search || "no-search"}`;
+    const cacheKey = `maps_${page}_${limit}_${search || "no-search"}_${recycleBin || "all"}_${onBoard || "all"}`;
 
     // Check cache (will be empty if cleared above)
     const cachedResult = cache.get(cacheKey);
@@ -205,6 +215,12 @@ const getAllMaps = async (req, res) => {
         { notes: new RegExp(search, "i") },
       ];
     }
+    if (recycleBin === "true") {
+      filter.recycleBin = true;
+    } else if (recycleBin === "false") {
+      filter.$or = [{ recycleBin: false }, { recycleBin: { $exists: false } }];
+    }
+    if (onBoard) filter.onBoard = onBoard;
 
     const skip = (page - 1) * limit;
     const maps = await mapsModel
@@ -215,7 +231,19 @@ const getAllMaps = async (req, res) => {
       .lean();
 
     const total = await mapsModel.countDocuments(filter);
-    const totalAllMaps = await mapsModel.countDocuments({});
+    
+    // Get total count based on recycleBin parameter
+    let totalAllMaps;
+    if (recycleBin === "true") {
+      totalAllMaps = await mapsModel.countDocuments({ recycleBin: true });
+    } else if (recycleBin === "false") {
+      totalAllMaps = await mapsModel.countDocuments({
+        $or: [{ recycleBin: false }, { recycleBin: { $exists: false } }]
+      });
+    } else {
+      // If recycleBin is not specified, count all maps
+      totalAllMaps = await mapsModel.countDocuments({});
+    }
 
     const result = {
       data: maps,
@@ -320,6 +348,45 @@ const toggleOnBoardStatus = async (req, res) => {
     console.error("Toggle onBoard status error:", error);
     res.status(500).json({
       message: "Error toggling onboard status",
+      error: error.message,
+    });
+  }
+};
+
+const moveToRecycleBin = async (req, res) => {
+  const { id } = req.params;
+  const { recycleBin } = req.body;
+
+  try {
+    if (typeof recycleBin !== "boolean") {
+      return res
+        .status(400)
+        .json({ message: "'recycleBin' must be a boolean value" });
+    }
+
+    const updatedMaps = await mapsModel.findByIdAndUpdate(
+      id,
+      { recycleBin },
+      { new: true }
+    );
+
+    if (!updatedMaps) {
+      return res.status(404).json({ message: "Maps not found" });
+    }
+
+    // Clear cache after toggling onBoard status
+    cache.flushAll();
+
+    res.status(200).json({
+      message: `Maps Property ${
+        recycleBin ? "Moved To Recycle Bin" : "removed from Recycle Bin"
+      }`,
+      data: updateMaps,
+    });
+  } catch (error) {
+    console.error("Moving Recycle Bin status error:", error);
+    res.status(500).json({
+      message: "Error Moving Property To Recycle Bin",
       error: error.message,
     });
   }
@@ -471,6 +538,7 @@ module.exports = {
   updateMaps,
   deleteMaps,
   toggleOnBoardStatus,
+  moveToRecycleBin,
   deleteMapsFile,
   getUploadStatus,
 };

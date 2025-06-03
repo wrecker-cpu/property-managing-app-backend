@@ -7,6 +7,7 @@ router.post("/", propertyController.createProperty);
 router.get("/", propertyController.getAllProperties);
 router.get("/:id", propertyController.getPropertyById);
 router.patch("/:id/onboard", propertyController.toggleOnBoardStatus); // PATCH endpoint
+router.patch("/:id/recycleBin", propertyController.moveToRecycleBin); // PATCH endpoint
 router.put("/:id", propertyController.updateProperty);
 router.delete("/:id", propertyController.deleteProperty);
 router.delete(

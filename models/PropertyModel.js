@@ -28,6 +28,10 @@ const propertySchema = new Schema(
       type: Boolean,
       default: false,
     },
+    recycleBin: {
+      type: Boolean,
+      default: false,
+    },
     personWhoShared: { type: String, required: true },
     contactNumber: { type: String, required: true },
     village: String,
